@@ -1,0 +1,23 @@
+{
+  "name": "kai-kds",
+  "version": "1.0.0",
+  "description": "KDS for KaiMall",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "runDev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "http": "^0.0.1-security",
+    "mssql": "^12.2.0",
+    "nodemon": "^3.1.14",
+    "socket.io": "^4.8.3",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -1,0 +1,21 @@
+# System Files
+.DS_Store
+Thumbs.db
+*.tmp
+
+# IDEs/Editors
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Dependencies
+node_modules/
+/vendor
+
+# Logs
+*.log
+
+# Environment Variables (Secrets)
+.env
+.env.local
