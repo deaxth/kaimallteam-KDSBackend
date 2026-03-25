@@ -67,6 +67,47 @@ function updatingHelper(label, tag) {
   return tag === 'name' ? labelTag : dataType;
 }
 
+async function getAllTerminals(req, res) {
+  try {
+    const pool = await getSQLPool(localConfig);
+    const getTerminalHeaders = await pool.request()
+      .query(`SELECT OutletID, TerminalName, HasMultipleStations, Status FROM KaiTerminalOutlets`);
+    const getTerminalIds = await pool.request()
+      .query(`SELECT OutletID, TerminalID FROM KaiTerminalIDs`);
+    const terminalHeaders = getTerminalHeaders.recordset;
+    const terminalIds = getTerminalIds.recordset;
+
+    let finalToReturn = [];
+
+    for (const terminalHeader of terminalHeaders) {
+      const schema = {
+        OutletID: null,
+        TerminalName: null, 
+        HasMultipleStations: null,
+        Status: null,
+        TerminalIDs: []
+      };
+      schema.OutletID = terminalHeader.OutletID;
+      schema.TerminalName = terminalHeader.TerminalName;
+      schema.HasMultipleStations = terminalHeader.HasMultipleStations;
+      schema.Status = terminalHeader.Status;
+      const myMap = new Map(terminalIds.map(terminalId => [terminalId.TerminalID, terminalId]));
+
+      for (const map of myMap.values()) {
+        if (map.OutletID === terminalHeader.OutletID) {
+          schema.TerminalIDs.push(map.TerminalID);
+        }
+      }
+      finalToReturn.push(schema);
+    }
+    
+    res.json({ message: "request success.", data: finalToReturn})
+    
+  } catch(err) {
+    catchError(err, res);
+  };
+};
+
 async function addTerminal (req, res) {
   const { terminalName, hasMultiple, status, terminalIds } = req.body;
   const userId = 1;
@@ -244,5 +285,6 @@ async function editTerminal(req, res) {
 
 module.exports = {
   addTerminal,
-  editTerminal
+  editTerminal,
+  getAllTerminals
 };
