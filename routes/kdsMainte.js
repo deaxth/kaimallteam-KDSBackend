@@ -12,7 +12,7 @@ router.get('/get-item-mainte', async(req, res) => {
   try {
     const getResult = await pool.request()
       .query(`
-        SELECT ct.ItemCode, ct.TimeNeeded, ct.WhoCreated, ct.DateCreated FROM CookingTimeItemMainte ct
+        SELECT ct.ItemCode, ct.TimeNeeded, ct.Station, ct.WhoCreated, ct.DateCreated FROM CookingTimeItemMainte ct
           LEFT JOIN [JADE_LINK].JADE_01.dbo.tblItem_Master im
         ON ct.ItemCode = im.ItemCode
           LEFT JOIN HelpdeskDB.dbo.Users u
@@ -57,12 +57,13 @@ router.post('/add-cooking-time', async(req, res) => {
         await new sql.Request(tx)
         .input('ItemCode', sql.VarChar, item.ItemCode)
         .input('TimeNeeded', sql.Int, item.TimeNeeded)
+        .input('Station', sql.Int, Number(item.Station))
         .input('WhoCreated', sql.Int, userId)
         .query(`
           INSERT INTO CookingTimeItemMainte
-            (ItemCode, TimeNeeded, WhoCreated)
+            (ItemCode, TimeNeeded, Station, WhoCreated)
           VALUES
-            (@ItemCode, @TimeNeeded, @WhoCreated);
+            (@ItemCode, @TimeNeeded, @Station, @WhoCreated);
         `);
       }
     };
@@ -88,26 +89,39 @@ router.post('/edit-cooking-time', async(req, res) => {
     for (const item of itemsToUpload) {
       const results = await new sql.Request(tx)
         .input('ItemCode', sql.VarChar, item.ItemCode)
-        .query('SELECT ItemCode, TimeNeeded FROM CookingTimeItemMainte WHERE ItemCode = @ItemCode');
-      const timeNeeded = results.recordset[0].TimeNeeded;
-      const newValues = {
-        itemCode: item.ItemCode,
-        newTime: item.TimeNeeded
-      };
-      if (parseInt(item.TimeNeeded) !== parseInt(timeNeeded)) {
-        itemsToChange.push(newValues);
-      }
+        .query('SELECT ItemCode, TimeNeeded, Station FROM CookingTimeItemMainte WHERE ItemCode = @ItemCode');
+        const currentRow = results.recordset[0];
+        const timeNeeded = currentRow?.TimeNeeded;
+        const station = currentRow?.Station;
+        
+        const newValues = {
+          itemCode: item.ItemCode,
+          newTime: item.TimeNeeded,
+          station: Number(item.Station),
+        };
+        
+        const timeChanged =
+          parseInt(item.TimeNeeded, 10) !== parseInt(timeNeeded, 10);
+        
+        const stationChanged =
+          parseInt(item.Station, 10) !== parseInt(station, 10);
+        
+        if (timeChanged || stationChanged) {
+          itemsToChange.push(newValues);
+        }
     };
 
     for (const item of itemsToUpload) {
       await new sql.Request(tx)
         .input('ItemCode', sql.VarChar, item.ItemCode)
         .input('TimeNeeded', sql.Int, item.TimeNeeded)
+        .input('Station', sql.Int, Number(item.Station))
         .input('WhoModified', sql.Int, userId)
         .query(`
           UPDATE CookingTimeItemMainte
           SET TimeNeeded = @TimeNeeded,
               ModifiedBy = @WhoModified,
+              Station = @Station,
               DateModified = GETDATE()
           WHERE ItemCode = @ItemCode;
         `);
@@ -151,6 +165,15 @@ router.post("/upload-cooking-time", async (req, res) => {
     return Math.max(0, Math.round(num));
   }
 
+  function parseStation(value) {
+    if (value === undefined || value === null) return null;
+
+    const text = String(value).trim();
+    if (!/^[1-3]$/.test(text)) return null;
+
+    return Number(text);
+  }
+
   if (!rawItems.length) {
     return res.status(400).json({ message: "No items found in upload." });
   }
@@ -161,6 +184,7 @@ router.post("/upload-cooking-time", async (req, res) => {
   rawItems.forEach((row, index) => {
     const itemCode = cleanText(row?.ItemCode);
     const timeNeeded = parseTimeNeeded(row?.TimeNeeded);
+    const station = parseStation(row?.Station);
 
     if (!itemCode) {
       invalidRows.push({
@@ -180,10 +204,19 @@ router.post("/upload-cooking-time", async (req, res) => {
       return;
     }
 
-    // Last occurrence wins if duplicate ItemCode appears in upload
+    if (station === null) {
+      invalidRows.push({
+        row: index + 1,
+        ItemCode: itemCode,
+        reason: "Station must be a single digit from 1 to 3.",
+      });
+      return;
+    }
+
     dedupedMap.set(normalizeKey(itemCode), {
       ItemCode: itemCode,
       TimeNeeded: timeNeeded,
+      Station: station,
     });
   });
 
@@ -217,14 +250,19 @@ router.post("/upload-cooking-time", async (req, res) => {
     );
 
     const existingResult = await new sql.Request(tx).query(`
-      SELECT ItemCode, TimeNeeded
+      SELECT ItemCode, TimeNeeded, Station
       FROM CookingTimeItemMainte
     `);
 
     const existingMap = new Map(
       existingResult.recordset.map((row) => [
         normalizeKey(row.ItemCode),
-        parseInt(row.TimeNeeded, 10),
+        {
+          TimeNeeded: parseInt(row.TimeNeeded, 10),
+          Station: row.Station === null || row.Station === undefined
+            ? null
+            : parseInt(row.Station, 10),
+        },
       ])
     );
 
@@ -244,26 +282,35 @@ router.post("/upload-cooking-time", async (req, res) => {
         continue;
       }
 
-      const existingTime = existingMap.get(key);
+      const existing = existingMap.get(key);
 
-      if (existingTime === undefined) {
+      if (existing === undefined) {
         await new sql.Request(tx)
           .input("ItemCode", sql.VarChar, item.ItemCode)
           .input("TimeNeeded", sql.Int, item.TimeNeeded)
+          .input("Station", sql.Int, item.Station)
           .input("WhoCreated", sql.Int, userId)
           .query(`
             INSERT INTO CookingTimeItemMainte
-              (ItemCode, TimeNeeded, WhoCreated)
+              (ItemCode, TimeNeeded, Station, WhoCreated)
             VALUES
-              (@ItemCode, @TimeNeeded, @WhoCreated);
+              (@ItemCode, @TimeNeeded, @Station, @WhoCreated);
           `);
 
         created += 1;
-        existingMap.set(key, item.TimeNeeded);
+        existingMap.set(key, {
+          TimeNeeded: item.TimeNeeded,
+          Station: item.Station,
+        });
         continue;
       }
 
-      if (parseInt(existingTime, 10) === parseInt(item.TimeNeeded, 10)) {
+      const sameTime =
+        parseInt(existing.TimeNeeded, 10) === parseInt(item.TimeNeeded, 10);
+      const sameStation =
+        parseInt(existing.Station, 10) === parseInt(item.Station, 10);
+
+      if (sameTime && sameStation) {
         unchanged += 1;
         continue;
       }
@@ -271,17 +318,22 @@ router.post("/upload-cooking-time", async (req, res) => {
       await new sql.Request(tx)
         .input("ItemCode", sql.VarChar, item.ItemCode)
         .input("TimeNeeded", sql.Int, item.TimeNeeded)
+        .input("Station", sql.Int, item.Station)
         .input("WhoModified", sql.Int, userId)
         .query(`
           UPDATE CookingTimeItemMainte
           SET TimeNeeded = @TimeNeeded,
+              Station = @Station,
               ModifiedBy = @WhoModified,
               DateModified = GETDATE()
           WHERE ItemCode = @ItemCode;
         `);
 
       updated += 1;
-      existingMap.set(key, item.TimeNeeded);
+      existingMap.set(key, {
+        TimeNeeded: item.TimeNeeded,
+        Station: item.Station,
+      });
     }
 
     await tx.commit();

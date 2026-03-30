@@ -67,6 +67,50 @@ function updatingHelper(label, tag) {
   return tag === 'name' ? labelTag : dataType;
 }
 
+async function getAllTerminals(req, res) {
+  try {
+    const pool = await getSQLPool(localConfig);
+    const getAllTerminals = await pool.request()
+      .query(`
+        SELECT kt.OutletID, kt.TerminalName, kt.HasMultipleStations, kt.Status, kid.TerminalID FROM KaiTerminalOutlets kt
+        LEFT JOIN KaiTerminalIDs kid
+        ON kt.OutletID = kid.OutletID  
+      `);
+    const allTerminals = getAllTerminals.recordset;
+    const terminalMap = new Map();
+
+    for (const row of allTerminals) {
+      const key = row.OutletID;
+      if (!terminalMap.has(key)) {
+        terminalMap.set(key, {
+          OutletID: row.OutletID,
+          TerminalName: row.TerminalName,
+          HasMultipleStations: row.HasMultipleStations,
+          Status: row.Status,
+          TerminalID: row.TerminalID ? [row.TerminalID] : []
+        });
+      } else {
+        const existing = terminalMap.get(key);
+
+        if (row.TerminalID && !existing.TerminalID.includes(row.TerminalID)) {
+          existing.TerminalID.push(row.TerminalID);
+        };
+      };
+    }
+
+    const withKey = Array.from(terminalMap);
+
+    const finalNoKey = withKey.map(val => {
+      return val[1];
+    }); 
+
+    res.json({ message: 'Succcess', data: finalNoKey });
+
+  } catch(err) {
+    catchError(err, res);
+  }
+}
+
 async function addTerminal (req, res) {
   const { terminalName, hasMultiple, status, terminalIds } = req.body;
   const userId = 1;
@@ -244,5 +288,6 @@ async function editTerminal(req, res) {
 
 module.exports = {
   addTerminal,
-  editTerminal
+  editTerminal,
+  getAllTerminals
 };
