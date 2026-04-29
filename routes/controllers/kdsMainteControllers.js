@@ -265,7 +265,7 @@ async function editTerminal(req, res) {
           const deletionInput = "(" + forDeletion.join(",") + ")";
 
           await requestOf(tx)
-          .input('OutletID', sql.Int, outletId)
+          .input('OutletID', sql.Int, outletId) 
           .input('UserID', sql.Int, userId)
           .query(`
             DELETE FROM KaiTerminalIDs WHERE TerminalID IN ${deletionInput} AND OutletID = @OutletID;

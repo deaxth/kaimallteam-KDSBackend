@@ -1206,7 +1206,6 @@ async function upsertSourceOrder(sourcePool, localPool, header) {
   } else {
     await recomputeOrderStatus(localPool, localOrder.KDSOrderID);
   }
-
   return getOrderHeaderBySourceTransId(localPool, header.TransID);
 }
 
@@ -1782,6 +1781,60 @@ async function finalizeItem(itemId, mode, actorName) {
   }
 }
 
+async function undoFinalizeItem(itemId, actorName) {
+  const localPool = await getLocalPool();
+  const tx = new sql.Transaction(localPool);
+  await tx.begin();
+
+  try {
+    const item = await getItemContext(tx, itemId);
+
+    if (!item) throw new Error("Item not found.");
+    if (item.IsVoided) throw new Error("Voided item cannot be updated.");
+    if (item.IsCancelled) throw new Error("Cancelled order cannot be updated.");
+
+    if (!["SERVING", "PICKUP"].includes(item.KDSStatus)) {
+      throw new Error("Only released items can be moved back to assembler.");
+    }
+
+    await requestOf(tx)
+      .input("KDSItemID", sql.BigInt, itemId)
+      .input("ActorName", sql.NVarChar(100), actorName || null)
+      .query(`
+        UPDATE dbo.KDS_OrderItem
+        SET
+          KDSStatus = 'ASSEMBLING',
+          FulfillmentMode = NULL,
+          ServingAt = NULL,
+          PickUpAt = NULL,
+          LastActionBy = @ActorName,
+          LastActionAt = GETDATE(),
+          UpdatedAt = GETDATE()
+        WHERE KDSItemID = @KDSItemID
+      `);
+
+    await recordHistory(tx, {
+      entityType: "ITEM",
+      entityId: itemId,
+      kdsOrderId: item.KDSOrderID,
+      kdsItemId: itemId,
+      fromStatus: item.KDSStatus,
+      toStatus: "ASSEMBLING",
+      action: "UNDO_FINALIZE",
+      reason: "Moved back to assembler after accidental release.",
+      actorName,
+    });
+
+    await recomputeOrderStatus(tx, item.KDSOrderID);
+    await tx.commit();
+
+    return { KDSOrderID: item.KDSOrderID, TerminalID: item.TerminalID };
+  } catch (error) {
+    await tx.rollback();
+    throw error;
+  }
+}
+
 async function markItemDone(itemId, actorName) {
   const localPool = await getLocalPool();
   const tx = new sql.Transaction(localPool);
@@ -2115,6 +2168,7 @@ module.exports = {
   moveItemToAssembling,
   sendBackItem,
   finalizeItem,
+  undoFinalizeItem,
   markItemDone,
   markOrderDone,
   doneAllItems

@@ -11,6 +11,7 @@ const {
   moveItemToAssembling,
   sendBackItem,
   finalizeItem,
+  undoFinalizeItem,
   markItemDone,
   markOrderDone,
   doneAllItems,
@@ -174,6 +175,25 @@ router.post("/items/:itemId/finalize", async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error("[KDS item finalize]", error);
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+router.post("/items/:itemId/undo-finalize", async (req, res) => {
+  try {
+    const itemId = Number(req.params.itemId);
+    const actorName = getActorName(req);
+
+    const result = await undoFinalizeItem(itemId, actorName);
+
+    emitRefresh(req.app.get("io"), result.TerminalID, "item-undo-finalize", {
+      orderId: result.KDSOrderID,
+      itemId,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("[KDS item undo finalize]", error);
     res.status(400).json({ success: false, message: error.message });
   }
 });
