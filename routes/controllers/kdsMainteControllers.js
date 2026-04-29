@@ -70,43 +70,46 @@ function updatingHelper(label, tag) {
 async function getAllTerminals(req, res) {
   try {
     const pool = await getSQLPool(localConfig);
-    const getTerminalHeaders = await pool.request()
-      .query(`SELECT OutletID, TerminalName, HasMultipleStations, Status FROM KaiTerminalOutlets`);
-    const getTerminalIds = await pool.request()
-      .query(`SELECT OutletID, TerminalID FROM KaiTerminalIDs`);
-    const terminalHeaders = getTerminalHeaders.recordset;
-    const terminalIds = getTerminalIds.recordset;
+    const getAllTerminals = await pool.request()
+      .query(`
+        SELECT kt.OutletID, kt.TerminalName, kt.HasMultipleStations, kt.Status, kid.TerminalID FROM KaiTerminalOutlets kt
+        LEFT JOIN KaiTerminalIDs kid
+        ON kt.OutletID = kid.OutletID  
+      `);
+    const allTerminals = getAllTerminals.recordset;
+    const terminalMap = new Map();
 
-    let finalToReturn = [];
+    for (const row of allTerminals) {
+      const key = row.OutletID;
+      if (!terminalMap.has(key)) {
+        terminalMap.set(key, {
+          OutletID: row.OutletID,
+          TerminalName: row.TerminalName,
+          HasMultipleStations: row.HasMultipleStations,
+          Status: row.Status,
+          TerminalID: row.TerminalID ? [row.TerminalID] : []
+        });
+      } else {
+        const existing = terminalMap.get(key);
 
-    for (const terminalHeader of terminalHeaders) {
-      const schema = {
-        OutletID: null,
-        TerminalName: null, 
-        HasMultipleStations: null,
-        Status: null,
-        TerminalIDs: []
+        if (row.TerminalID && !existing.TerminalID.includes(row.TerminalID)) {
+          existing.TerminalID.push(row.TerminalID);
+        };
       };
-      schema.OutletID = terminalHeader.OutletID;
-      schema.TerminalName = terminalHeader.TerminalName;
-      schema.HasMultipleStations = terminalHeader.HasMultipleStations;
-      schema.Status = terminalHeader.Status;
-      const myMap = new Map(terminalIds.map(terminalId => [terminalId.TerminalID, terminalId]));
-
-      for (const map of myMap.values()) {
-        if (map.OutletID === terminalHeader.OutletID) {
-          schema.TerminalIDs.push(map.TerminalID);
-        }
-      }
-      finalToReturn.push(schema);
     }
-    
-    res.json({ message: "request success.", data: finalToReturn})
-    
+
+    const withKey = Array.from(terminalMap);
+
+    const finalNoKey = withKey.map(val => {
+      return val[1];
+    }); 
+
+    res.json({ message: 'Succcess', data: finalNoKey });
+
   } catch(err) {
     catchError(err, res);
-  };
-};
+  }
+}
 
 async function addTerminal (req, res) {
   const { terminalName, hasMultiple, status, terminalIds } = req.body;
@@ -262,7 +265,7 @@ async function editTerminal(req, res) {
           const deletionInput = "(" + forDeletion.join(",") + ")";
 
           await requestOf(tx)
-          .input('OutletID', sql.Int, outletId)
+          .input('OutletID', sql.Int, outletId) 
           .input('UserID', sql.Int, userId)
           .query(`
             DELETE FROM KaiTerminalIDs WHERE TerminalID IN ${deletionInput} AND OutletID = @OutletID;

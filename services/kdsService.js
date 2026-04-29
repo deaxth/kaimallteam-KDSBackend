@@ -25,6 +25,20 @@ const CONFIGURED_CRITICAL_RATIO = 1.35;
 let syncTimer = null;
 let syncBusy = false;
 
+const ALLOWED_KDS_TERMINAL_IDS = [
+  "1",
+  "2",
+  // add more here
+];
+
+const ALLOWED_KDS_TERMINAL_SET = new Set(
+  ALLOWED_KDS_TERMINAL_IDS.map((id) => normalizeText(id))
+);
+
+function isAllowedKDSTerminal(terminalId) {
+  return ALLOWED_KDS_TERMINAL_SET.has(normalizeText(terminalId));
+}
+
 function normalizeText(value) {
   return String(value ?? "").trim();
 }
@@ -673,9 +687,13 @@ async function applySourceHeadersBatch(sourcePool, localPool, headers) {
     dedupedHeaders.push(header);
   }
 
-  if (!dedupedHeaders.length) return [];
+  const allowedHeaders = dedupedHeaders.filter((header) =>
+    isAllowedKDSTerminal(header.TerminalID)
+  );
 
-  const transIds = dedupedHeaders.map((row) => row.TransID);
+  if (!allowedHeaders.length) return [];
+
+  const transIds = allowedHeaders.map((row) => row.TransID);
   const sourceDetails = await fetchSourceDetailsByTransIds(sourcePool, transIds);
 
   const detailsByTransId = new Map();
@@ -685,7 +703,7 @@ async function applySourceHeadersBatch(sourcePool, localPool, headers) {
     detailsByTransId.get(key).push(detail);
   }
 
-  const relevantHeaders = dedupedHeaders.filter(
+  const relevantHeaders = allowedHeaders.filter(
     (header) => (detailsByTransId.get(String(header.TransID)) || []).length > 0
   );
 
@@ -1154,6 +1172,10 @@ async function fetchSourceDetails(sourcePool, transId) {
 }
 
 async function upsertSourceOrder(sourcePool, localPool, header) {
+  if (!isAllowedKDSTerminal(header.TerminalID)) {
+    return null;
+  }
+
   const details = await fetchSourceDetails(sourcePool, header.TransID);
 
   // If after filtering there are no KDS-relevant items, do not record/display this transaction.
@@ -1184,13 +1206,12 @@ async function upsertSourceOrder(sourcePool, localPool, header) {
   } else {
     await recomputeOrderStatus(localPool, localOrder.KDSOrderID);
   }
-
   return getOrderHeaderBySourceTransId(localPool, header.TransID);
 }
 
 async function refreshActiveOrders(sourcePool, localPool) {
   const activeOrdersRs = await localPool.request().query(`
-    SELECT SourceTransID
+    SELECT SourceTransID, TerminalID
     FROM dbo.KDS_OrderHeader
     WHERE OverallStatus <> 'DONE'
       AND IsCancelled = 0
@@ -1198,6 +1219,7 @@ async function refreshActiveOrders(sourcePool, localPool) {
 
   const activeTransIds = [...new Set(
     (activeOrdersRs.recordset || [])
+      .filter((row) => isAllowedKDSTerminal(row.TerminalID))
       .map((row) => Number(row.SourceTransID))
       .filter(Number.isFinite)
   )];
@@ -1315,6 +1337,7 @@ function groupKitchenRows(rows) {
         IsCancelled: !!row.IsCancelled,
         CancelledAt: row.CancelledAt,
         StartedAt: row.OrderStartedAt,
+        Stations: [],
         items: [],
       });
     }
@@ -1326,7 +1349,12 @@ function groupKitchenRows(rows) {
         String(row.ConfiguredTimeNeededMin).trim() !== ""
           ? Number(row.ConfiguredTimeNeededMin)
           : null;
-
+      const configuredStation =
+        row.ConfiguredStation !== null &&
+        row.ConfiguredStation !== undefined &&
+        String(row.ConfiguredStation).trim() !== ""
+          ? Number(row.ConfiguredStation)
+          : null;
       byOrder.get(row.KDSOrderID).items.push({
         KDSItemID: row.KDSItemID,
         SourceRecordID: row.SourceRecordID,
@@ -1342,6 +1370,7 @@ function groupKitchenRows(rows) {
         SendBackCount: row.SendBackCount,
         StartedAt: row.ItemStartedAt,
         ConfiguredTimeNeededMin: configuredTimeNeededMin,
+        ConfiguredStation: configuredStation,
         Timing: buildTimingProfileFromMinutes(configuredTimeNeededMin),
       });
     }
@@ -1349,6 +1378,13 @@ function groupKitchenRows(rows) {
 
   for (const order of byOrder.values()) {
     order.Timing = buildOrderTimingProfile(order.items);
+    order.Stations = [
+      ...new Set(
+        order.items
+          .map((item) => item.ConfiguredStation)
+          .filter((station) => station !== null && station !== undefined)
+      ),
+    ].sort((a, b) => a - b);
   }
 
   return [...byOrder.values()];
@@ -1376,6 +1412,13 @@ async function getKitchenSnapshot({ terminalId } = {}) {
           CASE
             WHEN TRY_CONVERT(DECIMAL(10, 2), NULLIF(LTRIM(RTRIM(CAST(ct.TimeNeeded AS NVARCHAR(50)))), '')) > 0
               THEN TRY_CONVERT(DECIMAL(10, 2), NULLIF(LTRIM(RTRIM(CAST(ct.TimeNeeded AS NVARCHAR(50)))), ''))
+            ELSE NULL
+          END
+        ),
+        Station = MAX(
+          CASE
+            WHEN TRY_CONVERT(INT, NULLIF(LTRIM(RTRIM(CAST(ct.Station AS NVARCHAR(10)))), '')) BETWEEN 1 AND 3
+              THEN TRY_CONVERT(INT, NULLIF(LTRIM(RTRIM(CAST(ct.Station AS NVARCHAR(10)))), ''))
             ELSE NULL
           END
         )
@@ -1412,7 +1455,12 @@ async function getKitchenSnapshot({ terminalId } = {}) {
         WHEN ctm.TimeNeededMinutes IS NOT NULL AND ctm.TimeNeededMinutes > 0
           THEN ctm.TimeNeededMinutes
         ELSE NULL
-      END AS ConfiguredTimeNeededMin
+      END AS ConfiguredTimeNeededMin,
+      CASE
+        WHEN ctm.Station BETWEEN 1 AND 3
+          THEN ctm.Station
+        ELSE NULL
+      END AS ConfiguredStation
     FROM dbo.KDS_OrderHeader h
     LEFT JOIN dbo.KDS_OrderItem i
       ON i.KDSOrderID = h.KDSOrderID
@@ -1720,6 +1768,60 @@ async function finalizeItem(itemId, mode, actorName) {
       fromStatus: item.KDSStatus,
       toStatus: nextStatus,
       action: nextStatus === "SERVING" ? "FINALIZE_SERVE" : "FINALIZE_PICKUP",
+      actorName,
+    });
+
+    await recomputeOrderStatus(tx, item.KDSOrderID);
+    await tx.commit();
+
+    return { KDSOrderID: item.KDSOrderID, TerminalID: item.TerminalID };
+  } catch (error) {
+    await tx.rollback();
+    throw error;
+  }
+}
+
+async function undoFinalizeItem(itemId, actorName) {
+  const localPool = await getLocalPool();
+  const tx = new sql.Transaction(localPool);
+  await tx.begin();
+
+  try {
+    const item = await getItemContext(tx, itemId);
+
+    if (!item) throw new Error("Item not found.");
+    if (item.IsVoided) throw new Error("Voided item cannot be updated.");
+    if (item.IsCancelled) throw new Error("Cancelled order cannot be updated.");
+
+    if (!["SERVING", "PICKUP"].includes(item.KDSStatus)) {
+      throw new Error("Only released items can be moved back to assembler.");
+    }
+
+    await requestOf(tx)
+      .input("KDSItemID", sql.BigInt, itemId)
+      .input("ActorName", sql.NVarChar(100), actorName || null)
+      .query(`
+        UPDATE dbo.KDS_OrderItem
+        SET
+          KDSStatus = 'ASSEMBLING',
+          FulfillmentMode = NULL,
+          ServingAt = NULL,
+          PickUpAt = NULL,
+          LastActionBy = @ActorName,
+          LastActionAt = GETDATE(),
+          UpdatedAt = GETDATE()
+        WHERE KDSItemID = @KDSItemID
+      `);
+
+    await recordHistory(tx, {
+      entityType: "ITEM",
+      entityId: itemId,
+      kdsOrderId: item.KDSOrderID,
+      kdsItemId: itemId,
+      fromStatus: item.KDSStatus,
+      toStatus: "ASSEMBLING",
+      action: "UNDO_FINALIZE",
+      reason: "Moved back to assembler after accidental release.",
       actorName,
     });
 
@@ -2066,6 +2168,7 @@ module.exports = {
   moveItemToAssembling,
   sendBackItem,
   finalizeItem,
+  undoFinalizeItem,
   markItemDone,
   markOrderDone,
   doneAllItems

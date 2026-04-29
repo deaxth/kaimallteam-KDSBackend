@@ -1,0 +1,94 @@
+POST http://192.168.10.8:59001/api/kds/all/done-all-items
+Content-Type: application/json
+
+{
+    "terminalIds": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25],
+    "actorName": "kitchen"
+}
+
+###
+GET http://192.168.10.8:59001/api/kds-mainte/get-item-mainte
+###
+GET http://192.168.10.8:59001/api/kds-mainte/get-items
+###
+POST http://192.168.10.8:59001/api/kds-mainte/add-cooking-time
+Content-Type: application/json
+
+{
+    "itemsToUpload": [
+        {"ItemCode": "F&B-000001", "TimeNeeded": "5"},
+        {"ItemCode": "F&B-000002", "TimeNeeded": "5"}
+    ]
+}
+
+###
+POST http://192.168.10.8:59001/api/kds-mainte/edit-cooking-time
+Content-Type: application/json
+
+{
+    "itemsToUpload": [
+        {"ItemCode": "F&B-000001", "TimeNeeded": "5"},
+        {"ItemCode": "F&B-000002", "TimeNeeded": "4"}
+    ]
+}
+
+    ###
+POST http://192.168.10.8:59001/api/kds/archive/now
+Content-Type: application/json
+
+{
+  "limit": 1000,
+  "reason": "INITIAL_BACKFILL"
+}
+###
+GET http://192.168.10.8:59001/api/kds-mainte/summary-per-transaction?type=detailed
+
+###
+GET http://192.168.10.8:59001/api/kds-mainte/summary-per-items
+
+###
+POST http://192.168.10.8:59001/api/kds-terminals/add-terminal
+Content-Type: application/json
+
+{
+    "terminalName": "Kanpai",
+    "hasMultiple": 1,
+    "status": "Active",
+    "terminalIds": [9]
+}   
+
+###
+POST http://192.168.10.8:59001/api/kds-terminals/edit-terminal
+Content-Type: application/json
+
+{
+    "outletId": 2,
+    "terminalName": "Stomping Ground",
+    "hasMultiple": true,
+    "status": "Active",
+    "terminalIds": [10,11]
+}
+
+###
+GET http://192.168.10.8:59001/api/kds-terminals/get-terminals
+
+###
+POST http://192.168.10.8:59002/login
+Content-Type: application/json
+
+{
+    "userName": "kaimall",
+    "password": "Kaimall2026"
+}
+
+###
+GET http://192.168.10.8:59002/items
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc3NDgzOTY1NiwiZXhwIjoxNzc0ODM5NjcxfQ.y9NPntZMSsi3TsZyfk12s3PKvjolVMFxAU5C6mNxpj0
+
+### 
+GET http://192.168.10.8:59002/renew-token
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc3NDgzOTYwMH0.1GzhHuIxVmhBSt-ffngs4i8ZWztI16CLuEmTm9Wynas
+
+###
+POST http://192.168.10.8:59002/logout
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc3NDgzOTc2N30.Gaphe4QeJWzM8LnPMhKL_WmU2cfkEU2Le9FLMPmHVtU
