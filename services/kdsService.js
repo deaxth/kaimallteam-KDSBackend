@@ -28,6 +28,13 @@ let syncBusy = false;
 const ALLOWED_KDS_TERMINAL_IDS = [
   "1",
   "2",
+  "4",
+  "5",  
+  "6",  
+  "7",  
+  "8",  
+  "15",  
+  "25",  
   // add more here
 ];
 
