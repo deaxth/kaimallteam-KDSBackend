@@ -10,6 +10,7 @@ const kdsRoutes = require("./routes/kdsRoutes");
 const kdsMainte = require("./routes/kdsMainte");
 const kdsTerminals = require("./routes/kdsTerminalMainte");
 const kdsScreens = require("./routes/kdsScreenMainte");
+const kdsMenuRouting = require("./routes/kdsMenuRoutingMainte");
 const { startSync, stopSync } = require("./services/kdsService");
 
 const app = express();
@@ -44,6 +45,7 @@ app.use("/api/kds", kdsRoutes);
 app.use("/api/kds-mainte", kdsMainte);
 app.use("/api/kds-terminals", kdsTerminals);
 app.use("/api/kds-screens", kdsScreens);
+app.use("/api/kds-menu-routing", kdsMenuRouting);
 
 io.on("connection", (socket) => {
   const screenType = String(
