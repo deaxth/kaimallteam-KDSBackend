@@ -9,6 +9,11 @@ const { closeAllPools } = require("./mssql-pool-management");
 const kdsRoutes = require("./routes/kdsRoutes");
 const kdsMainte = require('./routes/kdsMainte');
 const kdsTerminals = require('./routes/kdsTerminalMainte');
+
+const kdsScreens = require("./routes/kdsScreenMainte");
+
+app.use("/api/kds-screens", kdsScreens);
+
 const { startSync, stopSync } = require("./services/kdsService");
 
 const app = express();
