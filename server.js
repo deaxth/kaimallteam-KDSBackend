@@ -1,4 +1,4 @@
-require("dotenv").config(); 
+require("dotenv").config();
 
 const express = require("express");
 const http = require("http");
@@ -7,13 +7,9 @@ const { Server } = require("socket.io");
 
 const { closeAllPools } = require("./mssql-pool-management");
 const kdsRoutes = require("./routes/kdsRoutes");
-const kdsMainte = require('./routes/kdsMainte');
-const kdsTerminals = require('./routes/kdsTerminalMainte');
-
+const kdsMainte = require("./routes/kdsMainte");
+const kdsTerminals = require("./routes/kdsTerminalMainte");
 const kdsScreens = require("./routes/kdsScreenMainte");
-
-app.use("/api/kds-screens", kdsScreens);
-
 const { startSync, stopSync } = require("./services/kdsService");
 
 const app = express();
@@ -47,9 +43,12 @@ app.get("/health", (_req, res) => {
 app.use("/api/kds", kdsRoutes);
 app.use("/api/kds-mainte", kdsMainte);
 app.use("/api/kds-terminals", kdsTerminals);
+app.use("/api/kds-screens", kdsScreens);
 
 io.on("connection", (socket) => {
-  const screenType = String(socket.handshake.query?.screenType || "unknown").toLowerCase();
+  const screenType = String(
+    socket.handshake.query?.screenType || "unknown"
+  ).toLowerCase();
   const terminalId = String(socket.handshake.query?.terminalId || "ALL");
 
   socket.join(`screen:${screenType}`);
@@ -65,7 +64,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("kds:join", (payload = {}) => {
-    const nextScreenType = String(payload.screenType || screenType).toLowerCase();
+    const nextScreenType = String(
+      payload.screenType || screenType
+    ).toLowerCase();
     const nextTerminalId = String(payload.terminalId || terminalId);
 
     socket.join(`screen:${nextScreenType}`);
