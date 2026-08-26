@@ -25,26 +25,61 @@ const CONFIGURED_CRITICAL_RATIO = 1.35;
 let syncTimer = null;
 let syncBusy = false;
 
-const ALLOWED_KDS_TERMINAL_IDS = [
-  "1",
-  "2",
-  "4",
-  "5",  
-  "6",  
-  "7",  
-  "8",  
-  "15",  
-  "25",  
-  // add more here
-];
+//const ALLOWED_KDS_TERMINAL_IDS = [
+//  "1",
+//  "2",
+//  "4",
+//  "5",  
+//  "6",  
+//  "7",  
+//  "8",  
+//  "15",  
+//  "25",  
+//  // add more here
+//];
 
-const ALLOWED_KDS_TERMINAL_SET = new Set(
-  ALLOWED_KDS_TERMINAL_IDS.map((id) => normalizeText(id))
-);
+//const ALLOWED_KDS_TERMINAL_SET = new Set(
+ // ALLOWED_KDS_TERMINAL_IDS.map((id) => normalizeText(id))
+//);
+const TERMINAL_CONFIG_REFRESH_MS = 5000;
+
+let allowedKDSTerminalSet = new Set();
+let allowedKDSTerminalSetUpdatedAt = 0;
+
+async function refreshAllowedKDSTerminals(localPool) {
+  const now = Date.now();
+
+  if (now - allowedKDSTerminalSetUpdatedAt < TERMINAL_CONFIG_REFRESH_MS) {
+    return;
+  }
+
+  const { recordset } = await localPool.request().query(`
+    SELECT DISTINCT
+      LTRIM(RTRIM(CAST(kid.TerminalID AS NVARCHAR(50)))) AS TerminalID
+    FROM dbo.KaiTerminalIDs AS kid
+    INNER JOIN dbo.KaiTerminalOutlets AS kto
+      ON kto.OutletID = kid.OutletID
+    WHERE UPPER(LTRIM(RTRIM(ISNULL(kto.Status, '')))) = 'ACTIVE'
+      AND kid.TerminalID IS NOT NULL
+  `);
+
+  allowedKDSTerminalSet = new Set(
+    (recordset || [])
+      .map((row) => normalizeText(row.TerminalID))
+      .filter(Boolean)
+  );
+
+  allowedKDSTerminalSetUpdatedAt = now;
+}
 
 function isAllowedKDSTerminal(terminalId) {
-  return ALLOWED_KDS_TERMINAL_SET.has(normalizeText(terminalId));
+  return allowedKDSTerminalSet.has(normalizeText(terminalId));
 }
+
+
+//function isAllowedKDSTerminal(terminalId) {
+//  return ALLOWED_KDS_TERMINAL_SET.has(normalizeText(terminalId));
+//}
 
 function normalizeText(value) {
   return String(value ?? "").trim();
@@ -325,7 +360,7 @@ async function fetchSourceDetailsByTransIds(sourcePool, transIds) {
         CAST(d.UOM AS NVARCHAR(50)) AS UOM,
         CAST(ISNULL(d.Status, '') AS NVARCHAR(50)) AS DetailStatus
       FROM dbo.tblPOS_Details d
-      LEFT JOIN JADE_01.dbo.tblItem_Master im
+      LEFT JOIN JADE_01_TEST.dbo.tblItem_Master im
         ON im.ItemCode = d.ItemCode
       WHERE d.TransID IN (${clause})
         AND UPPER(LTRIM(RTRIM(ISNULL(CAST(d.UOM AS NVARCHAR(50)), '')))) NOT IN ('BOTTLE', 'CAN')
@@ -1168,7 +1203,7 @@ async function fetchSourceDetails(sourcePool, transId) {
         CAST(d.UOM AS NVARCHAR(50)) AS UOM,
         CAST(ISNULL(d.Status, '') AS NVARCHAR(50)) AS DetailStatus
       FROM dbo.tblPOS_Details d
-      LEFT JOIN JADE_01.dbo.tblItem_Master im
+      LEFT JOIN JADE_01_TEST.dbo.tblItem_Master im
         ON im.ItemCode = d.ItemCode
       WHERE d.TransID = @TransID
         AND UPPER(LTRIM(RTRIM(ISNULL(CAST(d.UOM AS NVARCHAR(50)), '')))) NOT IN ('BOTTLE', 'CAN')
@@ -1275,6 +1310,7 @@ async function syncNow(io) {
 
   try {
     const [sourcePool, localPool] = await Promise.all([getSourcePool(), getLocalPool()]);
+    await refreshAllowedKDSTerminals(localPool);
     const touchedTerminals = new Set();
 
     const anchor = await getSyncAnchor(localPool);

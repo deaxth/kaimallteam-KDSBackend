@@ -13,7 +13,7 @@ router.get('/get-item-mainte', async(req, res) => {
     const getResult = await pool.request()
       .query(`
         SELECT ct.ItemCode, ct.TimeNeeded, ct.Station, ct.WhoCreated, ct.DateCreated FROM CookingTimeItemMainte ct
-          LEFT JOIN [JADE_LINK].JADE_01.dbo.tblItem_Master im
+          LEFT JOIN [JADE_01_TEST].dbo.tblItem_Master im
         ON ct.ItemCode = im.ItemCode
           LEFT JOIN HelpdeskDB.dbo.Users u
         ON ct.WhoCreated = u.UserId
@@ -31,7 +31,7 @@ router.get('/get-items', async(req, res) => {
   try {
     const getResult = await pool.request()
       .query(`
-        SELECT ItemName, ItemCode FROM [JADE_LINK].JADE_01.dbo.tblItem_Master WHERE isSales = 1 AND Status = 'Active'
+        SELECT ItemName, ItemCode FROM [JADE_01_TEST].dbo.tblItem_Master WHERE isSales = 1 AND Status = 'Active'
       `);
     const items = getResult.recordset;
     res.json({ items: items });
@@ -234,7 +234,7 @@ router.post("/upload-cooking-time", async (req, res) => {
   try {
     const itemMasterResult = await new sql.Request(tx).query(`
       SELECT ItemCode, ItemName
-      FROM [JADE_LINK].JADE_01.dbo.tblItem_Master
+      FROM [JADE_01_TEST].dbo.tblItem_Master
       WHERE isSales = 1
         AND Status = 'Active'
     `);
