@@ -1,0 +1,244 @@
+const express = require("express");
+const sql = require("mssql");
+const { getSQLPool } = require("../mssql-pool-management");
+const localConfig = require("../config/localConfig");
+
+const router = express.Router();
+
+function httpError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function sendError(error, res) {
+  console.error("[KDS kitchen router test]", error);
+
+  res.status(error.statusCode || 500).json({
+    success: false,
+    message: error.message || "Unable to process kitchen routing.",
+  });
+}
+
+function validOutletId(value) {
+  const outletId = Number(value);
+
+  if (!Number.isInteger(outletId) || outletId <= 0) {
+    throw httpError("A valid outlet ID is required.");
+  }
+
+  return outletId;
+}
+
+router.get("/outlets/:outletId/items", async (req, res) => {
+  try {
+    const outletId = validOutletId(req.params.outletId);
+    const pool = await getSQLPool(localConfig);
+
+    const result = await pool
+      .request()
+      .input("OutletID", sql.Int, outletId)
+      .query(`
+        SELECT
+          h.KDSOrderID,
+          h.POS_No,
+          h.TerminalID,
+          h.DatePOS,
+          h.TableNo,
+          h.OrderType,
+
+          i.KDSItemID,
+          i.ItemCode,
+          i.ItemName,
+          i.Qty,
+          i.KDSStatus,
+          i.StartedAt AS ItemStartedAt,
+
+          claim.ClaimedOutletID,
+          claim.ClaimedStationNo,
+          claim.ClaimedAt,
+          claim.ClaimedBy,
+
+          COALESCE(claim.ClaimedStationNo, route.StationNo) AS StationNo,
+          route.TimeNeededMinutes
+
+        FROM dbo.KDS_OrderItem AS i
+        INNER JOIN dbo.KDS_OrderHeader AS h
+          ON h.KDSOrderID = i.KDSOrderID
+
+        LEFT JOIN dbo.KDS_ItemKitchenClaim AS claim
+          ON claim.KDSItemID = i.KDSItemID
+
+        LEFT JOIN dbo.KDS_MenuKitchenRoute AS route
+          ON route.ItemCode = i.ItemCode
+          AND route.OutletID = @OutletID
+          AND route.IsActive = 1
+
+        WHERE h.OverallStatus <> 'DONE'
+          AND (h.IsCancelled = 0 OR DATEDIFF(SECOND, h.CancelledAt, GETDATE()) <= 7)
+          AND i.IsVoided = 0
+          AND (
+            (claim.KDSItemID IS NULL AND route.MenuKitchenRouteID IS NOT NULL)
+            OR claim.ClaimedOutletID = @OutletID
+          )
+
+        ORDER BY h.DatePOS ASC, h.KDSOrderID ASC, i.KDSItemID ASC;
+      `);
+
+    res.json({
+      success: true,
+      outletId,
+      data: result.recordset,
+      serverTime: new Date().toISOString(),
+    });
+  } catch (error) {
+    sendError(error, res);
+  }
+});
+
+router.post("/items/:itemId/claim", async (req, res) => {
+  const pool = await getSQLPool(localConfig);
+  const tx = new sql.Transaction(pool);
+  let transactionStarted = false;
+
+  try {
+    const itemId = Number(req.params.itemId);
+
+    if (!Number.isInteger(itemId) || itemId <= 0) {
+      throw httpError("A valid KDS item ID is required.");
+    }
+
+    const outletId = validOutletId(req.body?.outletId);
+    const actorName = String(req.body?.actorName || "KDS Kitchen").trim().slice(0, 150);
+
+    await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+    transactionStarted = true;
+
+    const itemResult = await tx
+      .request()
+      .input("KDSItemID", sql.BigInt, itemId)
+      .query(`
+        SELECT TOP 1
+          i.KDSItemID,
+          i.KDSOrderID,
+          i.ItemCode,
+          i.KDSStatus,
+          i.IsVoided,
+          h.IsCancelled,
+          h.OverallStatus
+        FROM dbo.KDS_OrderItem AS i WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN dbo.KDS_OrderHeader AS h
+          ON h.KDSOrderID = i.KDSOrderID
+        WHERE i.KDSItemID = @KDSItemID;
+      `);
+
+    const item = itemResult.recordset[0];
+
+    if (!item) throw httpError("KDS item was not found.", 404);
+    if (item.IsVoided) throw httpError("Voided item cannot be claimed.");
+    if (item.IsCancelled) throw httpError("Cancelled order cannot be claimed.");
+    if (item.OverallStatus === "DONE") throw httpError("Completed order cannot be claimed.");
+    if (item.KDSStatus !== "PREPARING") {
+      throw httpError("Only PREPARING items can be claimed.");
+    }
+
+    const existingClaimResult = await tx
+      .request()
+      .input("KDSItemID", sql.BigInt, itemId)
+      .query(`
+        SELECT TOP 1
+          KDSItemID,
+          ClaimedOutletID,
+          ClaimedStationNo,
+          ClaimedAt,
+          ClaimedBy
+        FROM dbo.KDS_ItemKitchenClaim WITH (UPDLOCK, HOLDLOCK)
+        WHERE KDSItemID = @KDSItemID;
+      `);
+
+    const existingClaim = existingClaimResult.recordset[0];
+
+    if (existingClaim) {
+      await tx.commit();
+      transactionStarted = false;
+
+      if (existingClaim.ClaimedOutletID === outletId) {
+        return res.json({
+          success: true,
+          alreadyClaimed: true,
+          claim: existingClaim,
+        });
+      }
+
+      throw httpError("This item was already accepted by another kitchen.", 409);
+    }
+
+    const routeResult = await tx
+      .request()
+      .input("ItemCode", sql.NVarChar(50), item.ItemCode)
+      .input("OutletID", sql.Int, outletId)
+      .query(`
+        SELECT TOP 1
+          MenuKitchenRouteID,
+          OutletID,
+          StationNo
+        FROM dbo.KDS_MenuKitchenRoute WITH (UPDLOCK, HOLDLOCK)
+        WHERE ItemCode = @ItemCode
+          AND OutletID = @OutletID
+          AND IsActive = 1;
+      `);
+
+    const route = routeResult.recordset[0];
+
+    if (!route) {
+      throw httpError("This item is not assigned to the selected kitchen.");
+    }
+
+    await tx
+      .request()
+      .input("KDSItemID", sql.BigInt, itemId)
+      .input("KDSOrderID", sql.BigInt, item.KDSOrderID)
+      .input("ClaimedOutletID", sql.Int, outletId)
+      .input("ClaimedStationNo", sql.Int, route.StationNo)
+      .input("ClaimedBy", sql.NVarChar(150), actorName || "KDS Kitchen")
+      .query(`
+        INSERT INTO dbo.KDS_ItemKitchenClaim
+          (KDSItemID, KDSOrderID, ClaimedOutletID, ClaimedStationNo, ClaimedBy)
+        VALUES
+          (@KDSItemID, @KDSOrderID, @ClaimedOutletID, @ClaimedStationNo, @ClaimedBy);
+      `);
+
+    await tx.commit();
+    transactionStarted = false;
+
+    const io = req.app.get("io");
+
+    io.emit("kds:refresh-needed", {
+      terminalId: null,
+      outletId,
+      reason: "item-claimed-by-kitchen",
+      kdsItemId: itemId,
+      serverTime: new Date().toISOString(),
+    });
+
+    res.status(201).json({
+      success: true,
+      alreadyClaimed: false,
+      claim: {
+        KDSItemID: itemId,
+        KDSOrderID: item.KDSOrderID,
+        ClaimedOutletID: outletId,
+        ClaimedStationNo: route.StationNo,
+        ClaimedBy: actorName || "KDS Kitchen",
+      },
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await tx.rollback().catch(() => {});
+    }
+
+    sendError(error, res);
+  }
+});
+
+module.exports = router;
