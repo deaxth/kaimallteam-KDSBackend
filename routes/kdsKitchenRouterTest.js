@@ -30,22 +30,35 @@ function validOutletId(value) {
   return outletId;
 }
 
+function validLimit(value) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return 80;
+  }
+
+  return Math.min(Math.max(Math.trunc(parsed), 1), 200);
+}
+
 router.get("/outlets/:outletId/items", async (req, res) => {
   try {
     const outletId = validOutletId(req.params.outletId);
+    const limit = validLimit(req.query?.limit);
     const pool = await getSQLPool(localConfig);
 
     const result = await pool
       .request()
       .input("OutletID", sql.Int, outletId)
+      .input("Limit", sql.Int, limit)
       .query(`
-        SELECT
+        SELECT TOP (@Limit)
           h.KDSOrderID,
           h.POS_No,
           h.TerminalID,
           h.DatePOS,
           h.TableNo,
           h.OrderType,
+          h.StartedAt AS OrderStartedAt,
 
           i.KDSItemID,
           i.ItemCode,
@@ -62,32 +75,27 @@ router.get("/outlets/:outletId/items", async (req, res) => {
           COALESCE(claim.ClaimedStationNo, route.StationNo) AS StationNo,
           route.TimeNeededMinutes
 
-        FROM dbo.KDS_OrderItem AS i
-        INNER JOIN dbo.KDS_OrderHeader AS h
+        FROM dbo.KDS_MenuKitchenRoute AS route WITH (NOLOCK)
+        INNER JOIN dbo.KDS_OrderItem AS i WITH (NOLOCK)
+          ON i.ItemCode = route.ItemCode
+        INNER JOIN dbo.KDS_OrderHeader AS h WITH (NOLOCK)
           ON h.KDSOrderID = i.KDSOrderID
-
-        LEFT JOIN dbo.KDS_ItemKitchenClaim AS claim
+        LEFT JOIN dbo.KDS_ItemKitchenClaim AS claim WITH (NOLOCK)
           ON claim.KDSItemID = i.KDSItemID
-
-        LEFT JOIN dbo.KDS_MenuKitchenRoute AS route
-          ON route.ItemCode = i.ItemCode
-          AND route.OutletID = @OutletID
+        WHERE route.OutletID = @OutletID
           AND route.IsActive = 1
-
-        WHERE h.OverallStatus <> 'DONE'
+          AND h.OverallStatus <> 'DONE'
           AND (h.IsCancelled = 0 OR DATEDIFF(SECOND, h.CancelledAt, GETDATE()) <= 7)
           AND i.IsVoided = 0
-          AND (
-            (claim.KDSItemID IS NULL AND route.MenuKitchenRouteID IS NOT NULL)
-            OR claim.ClaimedOutletID = @OutletID
-          )
+          AND (claim.KDSItemID IS NULL OR claim.ClaimedOutletID = @OutletID)
 
-        ORDER BY h.DatePOS ASC, h.KDSOrderID ASC, i.KDSItemID ASC;
+        ORDER BY h.DatePOS DESC, h.KDSOrderID DESC, i.KDSItemID DESC;
       `);
 
     res.json({
       success: true,
       outletId,
+      limit,
       data: result.recordset,
       serverTime: new Date().toISOString(),
     });
