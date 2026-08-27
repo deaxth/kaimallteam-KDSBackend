@@ -53,6 +53,7 @@ router.get("/outlets/:outletId/items", async (req, res) => {
       .query(`
         SELECT TOP (@Limit)
           h.KDSOrderID,
+          CAST(h.SourceTransID AS NVARCHAR(100)) AS SourceTransID,
           h.POS_No,
           h.TerminalID,
           h.DatePOS,
@@ -80,14 +81,15 @@ router.get("/outlets/:outletId/items", async (req, res) => {
           ON i.ItemCode = route.ItemCode
         INNER JOIN dbo.KDS_OrderHeader AS h WITH (NOLOCK)
           ON h.KDSOrderID = i.KDSOrderID
-        LEFT JOIN dbo.KDS_ItemKitchenClaim AS claim WITH (NOLOCK)
-          ON claim.KDSItemID = i.KDSItemID
+        LEFT JOIN dbo.KDS_SourceItemKitchenClaim AS claim
+          ON claim.SourceTransID = LTRIM(RTRIM(CAST(h.SourceTransID AS NVARCHAR(100))))
+          AND claim.ItemCode = LTRIM(RTRIM(CAST(i.ItemCode AS NVARCHAR(100))))
         WHERE route.OutletID = @OutletID
           AND route.IsActive = 1
           AND h.OverallStatus <> 'DONE'
           AND (h.IsCancelled = 0 OR DATEDIFF(SECOND, h.CancelledAt, GETDATE()) <= 7)
           AND i.IsVoided = 0
-          AND (claim.KDSItemID IS NULL OR claim.ClaimedOutletID = @OutletID)
+          AND (claim.SourceTransID IS NULL OR claim.ClaimedOutletID = @OutletID)
 
         ORDER BY h.DatePOS DESC, h.KDSOrderID DESC, i.KDSItemID DESC;
       `);
@@ -129,6 +131,7 @@ router.post("/items/:itemId/claim", async (req, res) => {
         SELECT TOP 1
           i.KDSItemID,
           i.KDSOrderID,
+          LTRIM(RTRIM(CAST(h.SourceTransID AS NVARCHAR(100)))) AS SourceTransID,
           i.ItemCode,
           i.KDSStatus,
           i.IsVoided,
@@ -150,18 +153,28 @@ router.post("/items/:itemId/claim", async (req, res) => {
       throw httpError("Only PREPARING items can be claimed.");
     }
 
+    const sourceTransId = String(item.SourceTransID || "").trim();
+    const itemCode = String(item.ItemCode || "").trim();
+
+    if (!sourceTransId || !itemCode) {
+      throw httpError("The POS source order or ItemCode is missing for this item.");
+    }
+
     const existingClaimResult = await tx
       .request()
-      .input("KDSItemID", sql.BigInt, itemId)
+      .input("SourceTransID", sql.NVarChar(100), sourceTransId)
+      .input("ItemCode", sql.NVarChar(100), itemCode)
       .query(`
         SELECT TOP 1
-          KDSItemID,
+          SourceTransID,
+          ItemCode,
           ClaimedOutletID,
           ClaimedStationNo,
           ClaimedAt,
           ClaimedBy
-        FROM dbo.KDS_ItemKitchenClaim WITH (UPDLOCK, HOLDLOCK)
-        WHERE KDSItemID = @KDSItemID;
+        FROM dbo.KDS_SourceItemKitchenClaim WITH (UPDLOCK, HOLDLOCK)
+        WHERE SourceTransID = @SourceTransID
+          AND ItemCode = @ItemCode;
       `);
 
     const existingClaim = existingClaimResult.recordset[0];
@@ -174,7 +187,11 @@ router.post("/items/:itemId/claim", async (req, res) => {
         return res.json({
           success: true,
           alreadyClaimed: true,
-          claim: existingClaim,
+          claim: {
+            ...existingClaim,
+            KDSItemID: itemId,
+            KDSOrderID: item.KDSOrderID,
+          },
         });
       }
 
@@ -183,7 +200,7 @@ router.post("/items/:itemId/claim", async (req, res) => {
 
     const routeResult = await tx
       .request()
-      .input("ItemCode", sql.NVarChar(50), item.ItemCode)
+      .input("ItemCode", sql.NVarChar(100), itemCode)
       .input("OutletID", sql.Int, outletId)
       .query(`
         SELECT TOP 1
@@ -204,16 +221,16 @@ router.post("/items/:itemId/claim", async (req, res) => {
 
     await tx
       .request()
-      .input("KDSItemID", sql.BigInt, itemId)
-      .input("KDSOrderID", sql.BigInt, item.KDSOrderID)
+      .input("SourceTransID", sql.NVarChar(100), sourceTransId)
+      .input("ItemCode", sql.NVarChar(100), itemCode)
       .input("ClaimedOutletID", sql.Int, outletId)
       .input("ClaimedStationNo", sql.Int, route.StationNo)
       .input("ClaimedBy", sql.NVarChar(150), actorName || "KDS Kitchen")
       .query(`
-        INSERT INTO dbo.KDS_ItemKitchenClaim
-          (KDSItemID, KDSOrderID, ClaimedOutletID, ClaimedStationNo, ClaimedBy)
+        INSERT INTO dbo.KDS_SourceItemKitchenClaim
+          (SourceTransID, ItemCode, ClaimedOutletID, ClaimedStationNo, ClaimedBy)
         VALUES
-          (@KDSItemID, @KDSOrderID, @ClaimedOutletID, @ClaimedStationNo, @ClaimedBy);
+          (@SourceTransID, @ItemCode, @ClaimedOutletID, @ClaimedStationNo, @ClaimedBy);
       `);
 
     await tx.commit();
@@ -236,6 +253,8 @@ router.post("/items/:itemId/claim", async (req, res) => {
         KDSItemID: itemId,
         KDSOrderID: item.KDSOrderID,
         ClaimedOutletID: outletId,
+        SourceTransID: sourceTransId,
+        ItemCode: itemCode,
         ClaimedStationNo: route.StationNo,
         ClaimedBy: actorName || "KDS Kitchen",
       },
